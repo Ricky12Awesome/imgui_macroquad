@@ -1,20 +1,19 @@
 // mod render;
 
-use imgui::{DrawCmd, Ui};
-use macroquad::input::mouse_position;
-use macroquad::prelude::{screen_height, screen_width};
-use miniquad::{
-  Bindings, BufferSource, BufferType, BufferUsage, PassAction, RenderingBackend, TextureId,
-  UniformsSource,
-};
+use imgui::{DrawCmd, Io, Key, Ui};
 use miniquad::window::screen_size;
+use miniquad::{
+  Bindings, BlendFactor, BlendState, BlendValue, BufferLayout, BufferSource, BufferType,
+  BufferUsage, Equation, EventHandler, KeyCode, KeyMods, MouseButton, PassAction, Pipeline,
+  PipelineParams, RenderingBackend, ShaderMeta, ShaderSource, TextureId, UniformBlockLayout,
+  UniformDesc, UniformType, UniformsSource, VertexAttribute, VertexFormat,
+};
 
-pub mod shader {
-  use miniquad::{
-    BlendFactor, BlendState, BlendValue, BufferLayout, Equation, Pipeline, PipelineParams,
-    RenderingBackend, ShaderMeta, ShaderSource, UniformBlockLayout, UniformDesc, UniformType,
-    VertexAttribute, VertexFormat,
-  };
+#[cfg(feature = "macroquad")]
+pub use feature_macroquad::*;
+
+mod shader {
+  use super::*;
 
   pub fn pipeline(ctx: &mut dyn RenderingBackend) -> Pipeline {
     let shader = ctx
@@ -93,10 +92,11 @@ pub struct ImGuiContext<'a> {
   gl: &'a mut dyn RenderingBackend,
   font_atlas: TextureId,
   context: imgui::Context,
+  #[cfg(feature = "macroquad")]
+  macroquad_event_id: usize,
 }
 
 impl<'a> ImGuiContext<'a> {
-  // noinspection RsBorrowChecker
   pub fn new(gl: &'a mut dyn RenderingBackend) -> Self {
     let mut context = imgui::Context::create();
     let font_atlas = context.fonts().build_rgba32_texture();
@@ -106,26 +106,27 @@ impl<'a> ImGuiContext<'a> {
       font_atlas.data,
     );
 
+    setup_keymap(context.io_mut());
+
     Self {
-      // Intellij-Rust/RustRover is stupid
-      // false-positive: The value was moved out while it was still borrowed
       gl,
       font_atlas,
       context,
+      #[cfg(feature = "macroquad")]
+      macroquad_event_id: macroquad::input::utils::register_input_subscriber(),
     }
   }
 
-  pub fn update(&mut self) {
+  fn update(&mut self) {
     let io = self.context.io_mut();
 
-    io.display_size = [screen_width(), screen_height()];
-    io.mouse_pos = mouse_position().into();
+    io.display_size = screen_size().into();
     io.font_global_scale = 1.5;
   }
 
   pub fn raw_imgui(&mut self) -> &mut imgui::Context {
     &mut self.context
-  } 
+  }
 
   pub fn ui(&mut self, frame: impl FnOnce(&mut Ui)) {
     self.update();
@@ -204,8 +205,209 @@ impl<'a> ImGuiContext<'a> {
   }
 }
 
+impl<'a> EventHandler for ImGuiContext<'a> {
+  fn update(&mut self) {}
+
+  fn draw(&mut self) {}
+
+  fn resize_event(&mut self, width: f32, height: f32) {
+    let io = self.context.io_mut();
+    io.display_size = [width, height];
+  }
+
+  fn mouse_motion_event(&mut self, x: f32, y: f32) {
+    let io = self.context.io_mut();
+    io.mouse_pos = [x, y];
+  }
+
+  fn mouse_wheel_event(&mut self, x: f32, y: f32) {
+    let io = self.context.io_mut();
+    io.mouse_wheel = y / 100.;
+    io.mouse_wheel_h = x / 100.;
+  }
+  fn mouse_button_down_event(&mut self, button: MouseButton, _x: f32, _y: f32) {
+    let io = self.context.io_mut();
+    let mouse_left = button == MouseButton::Left;
+    let mouse_right = button == MouseButton::Right;
+    io.mouse_down = [mouse_left, mouse_right, false, false, false];
+  }
+  fn mouse_button_up_event(&mut self, _button: MouseButton, _x: f32, _y: f32) {
+    let io = self.context.io_mut();
+    io.mouse_down = [false, false, false, false, false];
+  }
+  fn char_event(&mut self, character: char, mods: KeyMods, _: bool) {
+    let io = self.context.io_mut();
+
+    io.key_ctrl = mods.ctrl;
+    io.key_alt = mods.alt;
+    io.key_shift = mods.shift;
+
+    io.add_input_character(character);
+  }
+
+  fn key_down_event(&mut self, keycode: KeyCode, mods: KeyMods, _: bool) {
+    let io = self.context.io_mut();
+
+    // when the keycode is the modifier itself - mods.MODIFIER is false yet, however the modifier button is just pressed and is actually true
+    io.key_ctrl = mods.ctrl;
+    io.key_alt = mods.alt;
+    io.key_shift = mods.shift;
+
+    io.keys_down[keycode as usize] = true;
+  }
+
+  fn key_up_event(&mut self, keycode: KeyCode, mods: KeyMods) {
+    let io = self.context.io_mut();
+
+    // when the keycode is the modifier itself - mods.MODIFIER is true, however the modifier is actually released
+    io.key_ctrl = keycode != KeyCode::LeftControl && keycode != KeyCode::RightControl && mods.ctrl;
+    io.key_alt = keycode != KeyCode::LeftAlt && keycode != KeyCode::RightAlt && mods.alt;
+    io.key_shift = keycode != KeyCode::LeftShift && keycode != KeyCode::RightShift && mods.shift;
+
+    io.keys_down[keycode as usize] = false;
+  }
+}
+
+fn setup_keymap(io: &mut Io) {
+  io[Key::Space] = KeyCode::Space as _;
+  io[Key::Apostrophe] = KeyCode::Apostrophe as _;
+  io[Key::Comma] = KeyCode::Comma as _;
+  io[Key::Minus] = KeyCode::Minus as _;
+  io[Key::Period] = KeyCode::Period as _;
+  io[Key::Slash] = KeyCode::Slash as _;
+  io[Key::Alpha0] = KeyCode::Key0 as _;
+  io[Key::Alpha1] = KeyCode::Key1 as _;
+  io[Key::Alpha2] = KeyCode::Key2 as _;
+  io[Key::Alpha3] = KeyCode::Key3 as _;
+  io[Key::Alpha4] = KeyCode::Key4 as _;
+  io[Key::Alpha5] = KeyCode::Key5 as _;
+  io[Key::Alpha6] = KeyCode::Key6 as _;
+  io[Key::Alpha7] = KeyCode::Key7 as _;
+  io[Key::Alpha8] = KeyCode::Key8 as _;
+  io[Key::Alpha9] = KeyCode::Key9 as _;
+  io[Key::Semicolon] = KeyCode::Semicolon as _;
+  io[Key::Equal] = KeyCode::Equal as _;
+  io[Key::A] = KeyCode::A as _;
+  io[Key::B] = KeyCode::B as _;
+  io[Key::C] = KeyCode::C as _;
+  io[Key::D] = KeyCode::D as _;
+  io[Key::E] = KeyCode::E as _;
+  io[Key::F] = KeyCode::F as _;
+  io[Key::G] = KeyCode::G as _;
+  io[Key::H] = KeyCode::H as _;
+  io[Key::I] = KeyCode::I as _;
+  io[Key::J] = KeyCode::J as _;
+  io[Key::K] = KeyCode::K as _;
+  io[Key::L] = KeyCode::L as _;
+  io[Key::M] = KeyCode::M as _;
+  io[Key::N] = KeyCode::N as _;
+  io[Key::O] = KeyCode::O as _;
+  io[Key::P] = KeyCode::P as _;
+  io[Key::Q] = KeyCode::Q as _;
+  io[Key::R] = KeyCode::R as _;
+  io[Key::S] = KeyCode::S as _;
+  io[Key::T] = KeyCode::T as _;
+  io[Key::U] = KeyCode::U as _;
+  io[Key::V] = KeyCode::V as _;
+  io[Key::W] = KeyCode::W as _;
+  io[Key::X] = KeyCode::X as _;
+  io[Key::Y] = KeyCode::Y as _;
+  io[Key::Z] = KeyCode::Z as _;
+  io[Key::LeftBracket] = KeyCode::LeftBracket as _;
+  io[Key::Backslash] = KeyCode::Backslash as _;
+  io[Key::RightBracket] = KeyCode::RightBracket as _;
+  io[Key::GraveAccent] = KeyCode::GraveAccent as _;
+  io[Key::Escape] = KeyCode::Escape as _;
+  io[Key::Enter] = KeyCode::Enter as _;
+  io[Key::Tab] = KeyCode::Tab as _;
+  io[Key::Backspace] = KeyCode::Backspace as _;
+  io[Key::Insert] = KeyCode::Insert as _;
+  io[Key::Delete] = KeyCode::Delete as _;
+  io[Key::RightArrow] = KeyCode::Right as _;
+  io[Key::LeftArrow] = KeyCode::Left as _;
+  io[Key::DownArrow] = KeyCode::Down as _;
+  io[Key::UpArrow] = KeyCode::Up as _;
+  io[Key::PageUp] = KeyCode::PageUp as _;
+  io[Key::PageDown] = KeyCode::PageDown as _;
+  io[Key::Home] = KeyCode::Home as _;
+  io[Key::End] = KeyCode::End as _;
+  io[Key::CapsLock] = KeyCode::CapsLock as _;
+  io[Key::ScrollLock] = KeyCode::ScrollLock as _;
+  io[Key::NumLock] = KeyCode::NumLock as _;
+  io[Key::PrintScreen] = KeyCode::PrintScreen as _;
+  io[Key::Pause] = KeyCode::Pause as _;
+  io[Key::F1] = KeyCode::F1 as _;
+  io[Key::F2] = KeyCode::F2 as _;
+  io[Key::F3] = KeyCode::F3 as _;
+  io[Key::F4] = KeyCode::F4 as _;
+  io[Key::F5] = KeyCode::F5 as _;
+  io[Key::F6] = KeyCode::F6 as _;
+  io[Key::F7] = KeyCode::F7 as _;
+  io[Key::F8] = KeyCode::F8 as _;
+  io[Key::F9] = KeyCode::F9 as _;
+  io[Key::F10] = KeyCode::F10 as _;
+  io[Key::F11] = KeyCode::F11 as _;
+  io[Key::F12] = KeyCode::F12 as _;
+  io[Key::Keypad0] = KeyCode::Kp0 as _;
+  io[Key::Keypad1] = KeyCode::Kp1 as _;
+  io[Key::Keypad2] = KeyCode::Kp2 as _;
+  io[Key::Keypad3] = KeyCode::Kp3 as _;
+  io[Key::Keypad4] = KeyCode::Kp4 as _;
+  io[Key::Keypad5] = KeyCode::Kp5 as _;
+  io[Key::Keypad6] = KeyCode::Kp6 as _;
+  io[Key::Keypad7] = KeyCode::Kp7 as _;
+  io[Key::Keypad8] = KeyCode::Kp8 as _;
+  io[Key::Keypad9] = KeyCode::Kp9 as _;
+  io[Key::KeypadDecimal] = KeyCode::KpDecimal as _;
+  io[Key::KeypadDivide] = KeyCode::KpDivide as _;
+  io[Key::KeypadMultiply] = KeyCode::KpMultiply as _;
+  io[Key::KeypadSubtract] = KeyCode::KpSubtract as _;
+  io[Key::KeypadAdd] = KeyCode::KpAdd as _;
+  io[Key::KeypadEnter] = KeyCode::KpEnter as _;
+  io[Key::KeypadEqual] = KeyCode::KpEqual as _;
+  io[Key::LeftShift] = KeyCode::LeftShift as _;
+  io[Key::LeftCtrl] = KeyCode::LeftControl as _;
+  io[Key::LeftAlt] = KeyCode::LeftAlt as _;
+  io[Key::LeftSuper] = KeyCode::LeftSuper as _;
+  io[Key::RightShift] = KeyCode::RightShift as _;
+  io[Key::RightCtrl] = KeyCode::RightControl as _;
+  io[Key::RightAlt] = KeyCode::RightAlt as _;
+  io[Key::RightSuper] = KeyCode::RightSuper as _;
+  io[Key::Menu] = KeyCode::Menu as _;
+  io[Key::Tab] = KeyCode::Tab as _;
+}
+
 #[cfg(feature = "macroquad")]
-pub fn create_imgui_context<'a>() -> ImGuiContext<'a> {
-  let gl = unsafe { macroquad::window::get_internal_gl() };
-  ImGuiContext::new(gl.quad_context)
+mod feature_macroquad {
+  use super::*;
+  use macroquad::input::utils::repeat_all_miniquad_input;
+
+  impl ImGuiContext<'_> {
+    pub fn setup_event_handler(&mut self) {
+      repeat_all_miniquad_input(self, self.macroquad_event_id);
+    }
+  }
+
+  /// Because I can't store ImGuiContext in a static global var,
+  /// and I don't want to impl Send/Sync for it
+  struct ImGuiContextSendSyncSpoof<'a>(ImGuiContext<'a>);
+
+  unsafe impl<'a> Send for ImGuiContextSendSyncSpoof<'a> {}
+  unsafe impl<'a> Sync for ImGuiContextSendSyncSpoof<'a> {}
+
+  static mut CONTEXT: Option<ImGuiContextSendSyncSpoof> = None;
+
+  pub fn get_imgui_context<'a>() -> &'static mut ImGuiContext<'a> {
+    unsafe {
+      // here since this also check if it's in the same thread
+      let gl = macroquad::window::get_internal_gl();
+
+      let context = CONTEXT.get_or_insert_with(|| {
+        let ctx = ImGuiContext::new(gl.quad_context);
+        ImGuiContextSendSyncSpoof(ctx)
+      });
+
+      &mut context.0
+    }
+  }
 }

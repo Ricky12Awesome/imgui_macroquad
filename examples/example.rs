@@ -4,7 +4,7 @@ use imgui::Condition;
 use macroquad::prelude::*;
 use miniquad::window::dpi_scale;
 
-use imgui_macroquad::create_imgui_context;
+use imgui_macroquad::get_imgui_context;
 
 fn conf() -> Conf {
   Conf {
@@ -21,18 +21,23 @@ async fn main() {
 }
 
 async fn _main() -> anyhow::Result<!> {
-  loop {
-    let mut ctx = create_imgui_context();
+  let ctx = get_imgui_context();
+  ctx.raw_imgui().set_ini_filename(None);
 
+  let mut buf = String::new();
+
+  loop {
     clear_background(Color::new(0.16, 0.16, 0.16, 1.));
 
-    ctx.raw_imgui().set_ini_filename(None);
+    ctx.setup_event_handler();
 
     ctx.ui(|ui| {
+      ui.show_demo_window(&mut true);
       ui.window("Window")
-        .size([200., 100.], Condition::Always)
+        .size([200., 100.], Condition::FirstUseEver)
         .build(|| {
           ui.text(format!("{}", dpi_scale()));
+          ui.input_text("Input", &mut buf).build();
         });
     });
 
