@@ -1,8 +1,10 @@
 #![feature(never_type)]
 
+use std::ptr::slice_from_raw_parts;
 use std::time::{Duration, Instant};
 
 use imgui::Condition;
+use macroquad::color::hsl_to_rgb;
 use macroquad::prelude::*;
 
 use imgui_macroquad::get_imgui_context;
@@ -26,12 +28,35 @@ async fn main() {
 async fn _main() -> anyhow::Result<!> {
   let ctx = get_imgui_context();
 
-  ctx.raw_imgui().set_ini_filename(None);
+  ctx.setup(|ctx| {
+    ctx.set_ini_filename(None);
+  });
 
   let mut buf = String::new();
 
   let wait = Duration::from_millis(125);
   let mut zoom = Instant::now() - wait;
+
+  let w = 2048usize;
+  let h = 2048usize;
+  let mut pixels = vec![0u32; w * h];
+
+  for y in 0..h {
+    for x in 0..w {
+      let yp = y as f32 / h as f32;
+      let xp = x as f32 / h as f32;
+      let Color { r, g, b, .. } = hsl_to_rgb(yp, 0.5, xp);
+      let rgba = [(255. * r) as u8, (255. * g) as u8, (255. * b) as u8, 255u8];
+
+      pixels[y + w * x] = u32::from_le_bytes(rgba);
+    }
+  }
+
+  let pixels = slice_from_raw_parts(pixels.as_ptr() as *const u8, pixels.len() * 4);
+  let pixels = unsafe { &*pixels };
+
+  let image = Texture2D::from_rgba8(w as _, h as _, pixels);
+  let id = ctx.bind_texture_id(image.raw_miniquad_id());
 
   loop {
     let now = Instant::now();
@@ -62,9 +87,14 @@ async fn _main() -> anyhow::Result<!> {
     ctx.ui(|ui| {
       ui.show_demo_window(&mut true);
       ui.window("Window")
-        .size([200., 100.], Condition::FirstUseEver)
+        .size([900., 900.], Condition::FirstUseEver)
         .build(|| {
           ui.text(format!("{}", scale));
+          ui.text(format!("{:?}", id));
+          ui.text(format!("{:?}", image.raw_miniquad_id()));
+
+          ui.input_text("Input", &mut buf).build();
+          ui.image_button("test", id, [512., 512.]);
           ui.input_text("Input", &mut buf).build();
         });
     });

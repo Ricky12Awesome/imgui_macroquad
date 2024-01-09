@@ -5,7 +5,7 @@ use miniquad::window::screen_size;
 use miniquad::{
   Bindings, BlendFactor, BlendState, BlendValue, BufferLayout, BufferSource, BufferType,
   BufferUsage, Equation, EventHandler, KeyCode, KeyMods, MouseButton, PassAction, Pipeline,
-  PipelineParams, RenderingBackend, ShaderMeta, ShaderSource, TextureId, UniformBlockLayout,
+  PipelineParams, RawId, RenderingBackend, ShaderMeta, ShaderSource, TextureId, UniformBlockLayout,
   UniformDesc, UniformType, UniformsSource, VertexAttribute, VertexFormat,
 };
 
@@ -91,7 +91,9 @@ mod shader {
 pub struct ImGuiContext<'a> {
   gl: &'a mut dyn RenderingBackend,
   font_atlas: TextureId,
+  textures: Vec<(imgui::TextureId, TextureIdInnerCast)>,
   context: imgui::Context,
+  last_frame: f64,
   #[cfg(feature = "macroquad")]
   macroquad_event_id: usize,
 }
@@ -112,19 +114,42 @@ impl<'a> ImGuiContext<'a> {
       gl,
       font_atlas,
       context,
+      textures: vec![],
+      last_frame: miniquad::date::now(),
       #[cfg(feature = "macroquad")]
       macroquad_event_id: macroquad::input::utils::register_input_subscriber(),
     }
+  }
+
+  pub fn bind_texture_id(&mut self, id: TextureId) -> imgui::TextureId {
+    let id = to_imgui_id(id);
+
+    self.textures.push(id);
+
+    id.0
   }
 
   pub fn raw_imgui(&mut self) -> &mut imgui::Context {
     &mut self.context
   }
 
+  pub fn setup(&mut self, setup: impl FnOnce(&mut imgui::Context)) {
+    setup(&mut self.context);
+  }
+
   pub fn ui(&mut self, frame: impl FnOnce(&mut Ui)) {
-    update(self.context.io_mut());
+    self.update();
     let ui = self.context.new_frame();
     frame(ui);
+  }
+
+  fn update(&mut self) {
+    let io = self.context.io_mut();
+    let now = miniquad::date::now();
+
+    io.display_size = screen_size().into();
+    io.delta_time = (now - self.last_frame) as _;
+    self.last_frame = now;
   }
 
   pub fn draw(&mut self) {
@@ -159,17 +184,33 @@ impl<'a> ImGuiContext<'a> {
         BufferSource::slice(draw_list.idx_buffer()),
       );
 
-      let bindings = Bindings {
-        vertex_buffers: vec![vtx_buffer],
-        index_buffer: idx_buffer,
-        images: vec![self.font_atlas],
-      };
-
       let mut slice_start = 0;
 
       for command in draw_list.commands() {
         if let DrawCmd::Elements { count, cmd_params } = command {
-          let imgui::DrawCmdParams { clip_rect, .. } = cmd_params;
+          let imgui::DrawCmdParams {
+            clip_rect,
+            texture_id,
+            ..
+          } = cmd_params;
+
+          let mut bindings = Bindings {
+            vertex_buffers: vec![vtx_buffer],
+            index_buffer: idx_buffer,
+            images: vec![self.font_atlas],
+          };
+
+          if texture_id.id() != 0 {
+            let (_, cast) = self
+              .textures
+              .iter()
+              .find(|(id, _)| *id == texture_id)
+              .unwrap();
+
+            let id = unsafe { std::mem::transmute(*cast) };
+
+            bindings.images = vec![id];
+          }
 
           let clip_rect = [
             (clip_rect[0] - clip_off[0]) * clip_scale[0],
@@ -199,9 +240,7 @@ impl<'a> ImGuiContext<'a> {
 }
 
 impl<'a> EventHandler for ImGuiContext<'a> {
-  fn update(&mut self) {
-
-  }
+  fn update(&mut self) {}
 
   fn draw(&mut self) {}
 
@@ -220,7 +259,9 @@ impl<'a> EventHandler for ImGuiContext<'a> {
     let io = self.context.io_mut();
     let mouse_left = button == MouseButton::Left;
     let mouse_right = button == MouseButton::Right;
-    io.mouse_down = [mouse_left, mouse_right, false, false, false];
+    let mouse_middle = button == MouseButton::Middle;
+
+    io.mouse_down = [mouse_left, mouse_right, mouse_middle, false, false];
   }
 
   fn mouse_button_up_event(&mut self, _button: MouseButton, _x: f32, _y: f32) {
@@ -261,6 +302,27 @@ impl<'a> EventHandler for ImGuiContext<'a> {
   }
 }
 
+/// Copied from `miniquad::graphics::TextureIdInner` because it's private I need the info
+#[allow(unused)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum TextureIdInnerCast {
+  Managed(usize),
+  Raw(RawId),
+}
+
+fn to_imgui_id(id: TextureId) -> (imgui::TextureId, TextureIdInnerCast) {
+  let cast = unsafe { std::mem::transmute::<TextureId, TextureIdInnerCast>(id) };
+
+  match cast {
+    TextureIdInnerCast::Managed(id) => (id.into(), cast),
+    TextureIdInnerCast::Raw(RawId::OpenGl(id)) => ((id as usize).into(), cast),
+    #[cfg(target_vendor = "apple")]
+    TextureIdInnerCast::Raw(RawId::Metal(_)) => {
+      panic!("Metal not support")
+    }
+  }
+}
+
 struct Clipboard;
 
 impl imgui::ClipboardBackend for Clipboard {
@@ -273,13 +335,9 @@ impl imgui::ClipboardBackend for Clipboard {
   }
 }
 
-fn update(io: &mut Io) {
-  io.display_size = screen_size().into();
-}
-
-fn setup(io: &mut imgui::Context) {
-  io.set_clipboard_backend(Clipboard);
-  setup_keymap(io.io_mut());
+fn setup(ctx: &mut imgui::Context) {
+  ctx.set_clipboard_backend(Clipboard);
+  setup_keymap(ctx.io_mut());
 }
 
 fn setup_keymap(io: &mut Io) {
