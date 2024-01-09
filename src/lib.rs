@@ -106,7 +106,7 @@ impl<'a> ImGuiContext<'a> {
       font_atlas.data,
     );
 
-    setup_keymap(context.io_mut());
+    setup(&mut context);
 
     Self {
       gl,
@@ -117,19 +117,12 @@ impl<'a> ImGuiContext<'a> {
     }
   }
 
-  fn update(&mut self) {
-    let io = self.context.io_mut();
-
-    io.display_size = screen_size().into();
-    io.font_global_scale = 1.5;
-  }
-
   pub fn raw_imgui(&mut self) -> &mut imgui::Context {
     &mut self.context
   }
 
   pub fn ui(&mut self, frame: impl FnOnce(&mut Ui)) {
-    self.update();
+    update(self.context.io_mut());
     let ui = self.context.new_frame();
     frame(ui);
   }
@@ -206,14 +199,11 @@ impl<'a> ImGuiContext<'a> {
 }
 
 impl<'a> EventHandler for ImGuiContext<'a> {
-  fn update(&mut self) {}
+  fn update(&mut self) {
+
+  }
 
   fn draw(&mut self) {}
-
-  fn resize_event(&mut self, width: f32, height: f32) {
-    let io = self.context.io_mut();
-    io.display_size = [width, height];
-  }
 
   fn mouse_motion_event(&mut self, x: f32, y: f32) {
     let io = self.context.io_mut();
@@ -225,16 +215,19 @@ impl<'a> EventHandler for ImGuiContext<'a> {
     io.mouse_wheel = y / 100.;
     io.mouse_wheel_h = x / 100.;
   }
+
   fn mouse_button_down_event(&mut self, button: MouseButton, _x: f32, _y: f32) {
     let io = self.context.io_mut();
     let mouse_left = button == MouseButton::Left;
     let mouse_right = button == MouseButton::Right;
     io.mouse_down = [mouse_left, mouse_right, false, false, false];
   }
+
   fn mouse_button_up_event(&mut self, _button: MouseButton, _x: f32, _y: f32) {
     let io = self.context.io_mut();
     io.mouse_down = [false, false, false, false, false];
   }
+
   fn char_event(&mut self, character: char, mods: KeyMods, _: bool) {
     let io = self.context.io_mut();
 
@@ -266,6 +259,27 @@ impl<'a> EventHandler for ImGuiContext<'a> {
 
     io.keys_down[keycode as usize] = false;
   }
+}
+
+struct Clipboard;
+
+impl imgui::ClipboardBackend for Clipboard {
+  fn get(&mut self) -> Option<String> {
+    miniquad::window::clipboard_get()
+  }
+
+  fn set(&mut self, value: &str) {
+    miniquad::window::clipboard_set(value)
+  }
+}
+
+fn update(io: &mut Io) {
+  io.display_size = screen_size().into();
+}
+
+fn setup(io: &mut imgui::Context) {
+  io.set_clipboard_backend(Clipboard);
+  setup_keymap(io.io_mut());
 }
 
 fn setup_keymap(io: &mut Io) {
