@@ -12,6 +12,11 @@ use miniquad::{
 #[cfg(feature = "macroquad")]
 pub use feature_macroquad::*;
 
+/// reexport of imgui
+pub mod imgui {
+  pub use imgui::*;
+}
+
 mod shader {
   use super::*;
 
@@ -135,6 +140,10 @@ impl<'a> ImGuiContext<'a> {
 
   pub fn setup(&mut self, setup: impl FnOnce(&mut imgui::Context)) {
     setup(&mut self.context);
+  }
+
+  pub fn style(&mut self, style: impl FnOnce(&mut imgui::Style)) {
+    style(self.context.style_mut());
   }
 
   pub fn ui(&mut self, frame: impl FnOnce(&mut Ui)) {

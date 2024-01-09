@@ -45,7 +45,15 @@ async fn _main() -> anyhow::Result<!> {
     for x in 0..w {
       let yp = y as f32 / h as f32;
       let xp = x as f32 / h as f32;
-      let Color { r, g, b, .. } = hsl_to_rgb(yp, 0.5, xp);
+
+      let mut r = 0.;
+      let mut g = 0.;
+      let mut b = 0.;
+
+      unsafe {
+        imgui::sys::igColorConvertHSVtoRGB(0.1, yp, 1.- xp, &mut r, &mut g, &mut b);
+      }
+
       let rgba = [(255. * r) as u8, (255. * g) as u8, (255. * b) as u8, 255u8];
 
       pixels[y + w * x] = u32::from_le_bytes(rgba);
@@ -94,8 +102,7 @@ async fn _main() -> anyhow::Result<!> {
           ui.text(format!("{:?}", image.raw_miniquad_id()));
 
           ui.input_text("Input", &mut buf).build();
-          ui.image_button("test", id, [512., 512.]);
-          ui.input_text("Input", &mut buf).build();
+          ui.image_button("image", id, [512., 512.]);
         });
     });
 
