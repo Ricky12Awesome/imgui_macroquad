@@ -1,5 +1,6 @@
 // mod render;
 
+use ::imgui::{FontConfig, FontId, FontSource};
 use imgui::{DrawCmd, Io, Key, Ui};
 use miniquad::window::screen_size;
 use miniquad::{
@@ -8,6 +9,8 @@ use miniquad::{
   PipelineParams, RawId, RenderingBackend, ShaderMeta, ShaderSource, TextureId, UniformBlockLayout,
   UniformDesc, UniformType, UniformsSource, VertexAttribute, VertexFormat,
 };
+use std::cell::RefCell;
+use std::rc::Rc;
 
 #[cfg(feature = "macroquad")]
 pub use feature_macroquad::*;
@@ -95,8 +98,10 @@ mod shader {
 
 pub struct ImGuiContext<'a> {
   gl: &'a mut dyn RenderingBackend,
-  font_atlas: TextureId,
-  textures: Vec<(imgui::TextureId, TextureIdInnerCast)>,
+  font_texture: TextureId,
+  default_font: Option<FontIdHandle>,
+  fonts: Vec<(FontIdHandle, FontSource<'a>)>,
+  textures: Vec<(imgui::TextureId, TextureId)>,
   context: imgui::Context,
   last_frame: f64,
   #[cfg(feature = "macroquad")]
@@ -106,8 +111,9 @@ pub struct ImGuiContext<'a> {
 impl<'a> ImGuiContext<'a> {
   pub fn new(gl: &'a mut dyn RenderingBackend) -> Self {
     let mut context = imgui::Context::create();
-    let font_atlas = context.fonts().build_rgba32_texture();
-    let font_atlas = gl.new_texture_from_rgba8(
+    let fonts = context.fonts();
+    let font_atlas = fonts.build_rgba32_texture();
+    let font_texture = gl.new_texture_from_rgba8(
       font_atlas.width as u16,
       font_atlas.height as u16,
       font_atlas.data,
@@ -117,13 +123,91 @@ impl<'a> ImGuiContext<'a> {
 
     Self {
       gl,
-      font_atlas,
       context,
+      font_texture,
+      default_font: None,
+      fonts: vec![],
       textures: vec![],
       last_frame: miniquad::date::now(),
       #[cfg(feature = "macroquad")]
       macroquad_event_id: macroquad::input::utils::register_input_subscriber(),
     }
+  }
+
+  /// TTF Font
+  pub fn add_font_from_bytes(&mut self, name: &str, bytes: &'a [u8]) -> FontIdHandle {
+    let fonts = self.context.fonts();
+
+    let source = FontSource::TtfData {
+      data: bytes,
+      size_pixels: 16.,
+      config: Some(FontConfig {
+        name: Some(name.into()),
+        ..Default::default()
+      }),
+    };
+
+    let id = fonts.add_font(&[source.clone()]);
+    let handle = FontIdHandle::new(id);
+
+    self.fonts.push((handle.clone(), source));
+
+    let font_atlas = fonts.build_rgba32_texture();
+
+    self.gl.texture_resize(
+      self.font_texture,
+      font_atlas.width,
+      font_atlas.height,
+      Some(font_atlas.data),
+    );
+
+    handle
+  }
+
+  pub fn set_font_size(&mut self, size: f32) {
+    let fonts = self.context.fonts();
+    fonts.clear();
+
+    for (handle, source) in &self.fonts {
+      let source = match source {
+        FontSource::DefaultFontData { config } => FontSource::DefaultFontData {
+          config: config.as_ref().map(|config| FontConfig {
+            size_pixels: size,
+            ..config.clone()
+          }),
+        },
+        FontSource::TtfData {
+          data,
+          size_pixels: _,
+          config,
+        } => FontSource::TtfData {
+          data,
+          size_pixels: size,
+          config: config.as_ref().map(|config| FontConfig {
+            size_pixels: size,
+            ..config.clone()
+          }),
+        },
+      };
+
+      let id = fonts.add_font(&[source]);
+      handle.update(id);
+    }
+
+    let font_atlas = fonts.build_rgba32_texture();
+
+    self.gl.texture_resize(
+      self.font_texture,
+      font_atlas.width,
+      font_atlas.height,
+      Some(font_atlas.data),
+    );
+
+    self.context.style_mut().scale_all_sizes(1.0);
+  }
+
+  pub fn set_default_font(&mut self, id: FontIdHandle) {
+    self.default_font = Some(id);
   }
 
   pub fn bind_texture_id(&mut self, id: TextureId) -> imgui::TextureId {
@@ -148,7 +232,14 @@ impl<'a> ImGuiContext<'a> {
 
   pub fn ui(&mut self, frame: impl FnOnce(&mut Ui)) {
     self.update();
+
     let ui = self.context.new_frame();
+
+    // false positive: cannot borrow `*ui` as mutable because it is also borrowed as immutable
+    // its fine in this case
+    let ui2 = unsafe { ignore_lifetime_mut(ui) };
+    let _stack = self.default_font.as_ref().map(|id| ui2.push_font(id.get()));
+
     frame(ui);
   }
 
@@ -171,7 +262,7 @@ impl<'a> ImGuiContext<'a> {
     let pipeline = shader::pipeline(self.gl);
     let (width, height) = screen_size();
 
-    let projection = ::glam::Mat4::orthographic_rh_gl(0., width, height, 0., -1., 1.);
+    let projection = glam::Mat4::orthographic_rh_gl(0., width, height, 0., -1., 1.);
     let uniform = shader::Uniforms { projection };
 
     self.gl.apply_pipeline(&pipeline);
@@ -203,23 +294,24 @@ impl<'a> ImGuiContext<'a> {
             ..
           } = cmd_params;
 
-          let mut bindings = Bindings {
-            vertex_buffers: vec![vtx_buffer],
-            index_buffer: idx_buffer,
-            images: vec![self.font_atlas],
-          };
-
-          if texture_id.id() != 0 {
-            let (_, cast) = self
+          let id = if texture_id.id() == 0 {
+            self.font_texture
+          } else {
+            let (_, id) = self
               .textures
               .iter()
               .find(|(id, _)| *id == texture_id)
+              .copied()
               .unwrap();
 
-            let id = unsafe { std::mem::transmute(*cast) };
+            id
+          };
 
-            bindings.images = vec![id];
-          }
+          let bindings = Bindings {
+            vertex_buffers: vec![vtx_buffer],
+            index_buffer: idx_buffer,
+            images: vec![id],
+          };
 
           let clip_rect = [
             (clip_rect[0] - clip_off[0]) * clip_scale[0],
@@ -311,25 +403,64 @@ impl<'a> EventHandler for ImGuiContext<'a> {
   }
 }
 
+/// Handle for FontId since resizing fonts will give new ids
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FontIdHandle(Rc<RefCell<FontId>>);
+
+unsafe impl Send for FontIdHandle {}
+unsafe impl Sync for FontIdHandle {}
+
+impl FontIdHandle {
+  fn new(id: FontId) -> Self {
+    Self(Rc::new(RefCell::new(id)))
+  }
+
+  pub fn get(&self) -> FontId {
+    *self.0.borrow()
+  }
+
+  fn update(&self, id: FontId) {
+    *self.0.borrow_mut() = id;
+  }
+}
+
+impl From<FontId> for FontIdHandle {
+  fn from(value: FontId) -> Self {
+    Self::new(value)
+  }
+}
+
+#[allow(clippy::from_over_into)]
+impl Into<FontId> for FontIdHandle {
+  fn into(self) -> FontId {
+    self.get()
+  }
+}
+
 /// Copied from `miniquad::graphics::TextureIdInner` because it's private I need the info
 #[allow(unused)]
 #[derive(Clone, Debug, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum TextureIdInnerCast {
+enum TextureIdInnerCast {
   Managed(usize),
   Raw(RawId),
 }
 
-fn to_imgui_id(id: TextureId) -> (imgui::TextureId, TextureIdInnerCast) {
-  let cast = unsafe { std::mem::transmute::<TextureId, TextureIdInnerCast>(id) };
+fn to_imgui_id(texture_id: TextureId) -> (imgui::TextureId, TextureId) {
+  let cast = unsafe { std::mem::transmute::<TextureId, TextureIdInnerCast>(texture_id) };
 
   match cast {
-    TextureIdInnerCast::Managed(id) => (id.into(), cast),
-    TextureIdInnerCast::Raw(RawId::OpenGl(id)) => ((id as usize).into(), cast),
+    TextureIdInnerCast::Managed(id) => (id.into(), texture_id),
+    TextureIdInnerCast::Raw(RawId::OpenGl(id)) => ((id as usize).into(), texture_id),
     #[cfg(target_vendor = "apple")]
     TextureIdInnerCast::Raw(RawId::Metal(_)) => {
       panic!("Metal not support")
     }
   }
+}
+
+/// Here because borrow checker gets in the way of imgui in certain cases
+unsafe fn ignore_lifetime_mut<'a, T>(t: &mut T) -> &'a mut T {
+  &mut *(t as *mut T)
 }
 
 struct Clipboard;

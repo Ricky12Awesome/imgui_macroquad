@@ -4,7 +4,6 @@ use std::ptr::slice_from_raw_parts;
 use std::time::{Duration, Instant};
 
 use imgui::Condition;
-use macroquad::color::hsl_to_rgb;
 use macroquad::prelude::*;
 
 use imgui_macroquad::get_imgui_context;
@@ -25,8 +24,14 @@ async fn main() {
   _main().await.unwrap();
 }
 
+const NOTOSANS_FONT: &[u8] = include_bytes!("fonts/NotoSans-Regular.ttf");
+
 async fn _main() -> anyhow::Result<!> {
   let ctx = get_imgui_context();
+
+  let notosans = ctx.add_font_from_bytes("NotoSans-Regular", NOTOSANS_FONT);
+
+  ctx.set_default_font(notosans);
 
   ctx.setup(|ctx| {
     ctx.set_ini_filename(None);
@@ -35,7 +40,8 @@ async fn _main() -> anyhow::Result<!> {
   let mut buf = String::new();
 
   let wait = Duration::from_millis(125);
-  let mut zoom = Instant::now() - wait;
+  let mut zoom_wait = Instant::now() - wait;
+  let mut font_size = 24f32;
 
   let w = 2048usize;
   let h = 2048usize;
@@ -51,7 +57,7 @@ async fn _main() -> anyhow::Result<!> {
       let mut b = 0.;
 
       unsafe {
-        imgui::sys::igColorConvertHSVtoRGB(0.1, yp, 1.- xp, &mut r, &mut g, &mut b);
+        imgui::sys::igColorConvertHSVtoRGB(0.1, yp, 1. - xp, &mut r, &mut g, &mut b);
       }
 
       let rgba = [(255. * r) as u8, (255. * g) as u8, (255. * b) as u8, 255u8];
@@ -74,33 +80,31 @@ async fn _main() -> anyhow::Result<!> {
 
     if is_key_down(KeyCode::LeftControl) {
       let (wait, multi) = if is_key_down(KeyCode::LeftShift) {
-        (wait * 2, 1.)
+        (wait * 2, 2.)
       } else {
-        (wait, 0.25)
+        (wait, 1.25)
       };
 
-      if is_key_down(KeyCode::Minus) && now >= zoom {
-        ctx.raw_imgui().io_mut().font_global_scale -= multi;
-        zoom = now + wait;
+      if is_key_down(KeyCode::Minus) && now >= zoom_wait {
+        font_size /= multi;
+        font_size = font_size.floor();
+        zoom_wait = now + wait;
+        ctx.set_font_size(font_size);
       }
 
-      if is_key_down(KeyCode::Equal) && now >= zoom {
-        ctx.raw_imgui().io_mut().font_global_scale += multi;
-        zoom = now + wait;
+      if is_key_down(KeyCode::Equal) && now >= zoom_wait {
+        font_size *= multi;
+        font_size = font_size.floor();
+        zoom_wait = now + wait;
+        ctx.set_font_size(font_size);
       }
     }
-
-    let scale = ctx.raw_imgui().io_mut().font_global_scale;
 
     ctx.ui(|ui| {
       ui.show_demo_window(&mut true);
       ui.window("Window")
         .size([900., 900.], Condition::FirstUseEver)
         .build(|| {
-          ui.text(format!("{}", scale));
-          ui.text(format!("{:?}", id));
-          ui.text(format!("{:?}", image.raw_miniquad_id()));
-
           ui.input_text("Input", &mut buf).build();
           ui.image_button("image", id, [512., 512.]);
         });
