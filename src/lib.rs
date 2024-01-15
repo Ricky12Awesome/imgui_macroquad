@@ -101,7 +101,7 @@ pub struct ImGuiContext<'a> {
   gl: &'a mut dyn RenderingBackend,
   font_texture: TextureId,
   default_font: Option<FontIdHandle>,
-  fonts: Vec<(FontIdHandle, FontSource<'a>)>,
+  fonts: Vec<(FontIdHandle, FontFamily<'a>)>,
   textures: Vec<(imgui::TextureId, TextureId)>,
   context: imgui::Context,
   last_frame: f64,
@@ -139,37 +139,13 @@ impl<'a> ImGuiContext<'a> {
     }
   }
 
-  /// Adds a TTF font to the font list with the given name and a default size of 16px
-  pub fn add_font_from_bytes(&mut self, name: &str, data: &'a [u8]) -> FontIdHandle {
-    self.add_font_from_bytes_ex(
-      16.,
-      data,
-      Some(FontConfig {
-        name: Some(name.into()),
-        ..Default::default()
-      }),
-    )
-  }
-
-  /// Adds a TTF font to the font list with custom size and config
-  pub fn add_font_from_bytes_ex(
-    &mut self,
-    size_pixels: f32,
-    data: &'a [u8],
-    config: Option<FontConfig>,
-  ) -> FontIdHandle {
+  pub fn add_font_family(&mut self, family: FontFamily<'a>) -> FontIdHandle {
     let fonts = self.context.fonts();
 
-    let source = FontSource::TtfData {
-      data,
-      size_pixels,
-      config,
-    };
-
-    let id = fonts.add_font(&[source.clone()]);
+    let id = fonts.add_font(family.sources());
     let handle = FontIdHandle::new(id);
 
-    self.fonts.push((handle.clone(), source));
+    self.fonts.push((handle.clone(), family));
 
     let font_atlas = fonts.build_rgba32_texture();
 
@@ -183,28 +159,13 @@ impl<'a> ImGuiContext<'a> {
     handle
   }
 
-  pub fn set_font_size(&mut self, size: f32) {
+  pub fn set_font_size(&mut self, new_size: f32) {
     let fonts = self.context.fonts();
     fonts.clear();
 
-    for (handle, source) in &self.fonts {
-      let source = match source {
-        FontSource::TtfData {
-          data,
-          size_pixels: _,
-          config,
-        } => FontSource::TtfData {
-          data,
-          size_pixels: size,
-          config: config.as_ref().map(|config| FontConfig {
-            size_pixels: size,
-            ..config.clone()
-          }),
-        },
-        _ => unreachable!(),
-      };
-
-      let id = fonts.add_font(&[source]);
+    for (handle, family) in self.fonts.iter_mut() {
+      family.update_size(new_size);
+      let id = fonts.add_font(family.sources());
       handle.update(id);
     }
 
@@ -230,6 +191,11 @@ impl<'a> ImGuiContext<'a> {
     self.textures.push(id);
 
     id.0
+  }
+
+  #[cfg(feature = "macroquad")]
+  pub fn toggle_auto_trigger_event_handler(&mut self) {
+    self.auto_trigger_event_handler = !self.auto_trigger_event_handler;
   }
 
   pub fn raw_imgui(&mut self) -> &mut imgui::Context {
@@ -453,6 +419,63 @@ impl Into<FontId> for FontIdHandle {
   }
 }
 
+#[derive(Debug, Clone)]
+pub struct FontFamily<'a> {
+  name: String,
+  size_pixels: f32,
+  sources: Vec<FontSource<'a>>,
+}
+
+impl<'a> FontFamily<'a> {
+  pub fn new(name: impl ToString, size: f32) -> Self {
+    Self {
+      name: name.to_string(),
+      size_pixels: size,
+      sources: vec![]
+    }
+  }
+
+  pub fn sources(&'a self) -> &'a [FontSource<'a>] {
+    &self.sources
+  }
+
+  /// Adds a TTF font to the font list with the given name and default size
+  pub fn add_font_from_bytes(&mut self, data: &'a [u8]) {
+    self.add_font_from_bytes_ex(data, FontConfig::default())
+  }
+
+  /// Adds a TTF font to the font list with custom config
+  pub fn add_font_from_bytes_ex(&mut self, data: &'a [u8], extra_config: FontConfig) {
+    self.sources.push(FontSource::TtfData {
+      data,
+      size_pixels: self.size_pixels,
+      config: Some(FontConfig {
+        name: Some(self.name.clone()),
+        size_pixels: self.size_pixels,
+        ..extra_config
+      }),
+    });
+  }
+
+  fn update_size(&mut self, new_size: f32) {
+    self.size_pixels = new_size;
+
+    for source in self.sources.iter_mut() {
+      match source {
+        FontSource::TtfData {
+          data: _,
+          size_pixels,
+          config: Some(config),
+        } => {
+          *size_pixels = new_size;
+          config.size_pixels = new_size;
+        }
+        _ => unreachable!(),
+      }
+    }
+  }
+}
+
 /// Copied from `miniquad::graphics::TextureIdInner` because it's private I need the info
 #[allow(unused)]
 #[derive(Clone, Debug, Copy, PartialEq, Eq, Hash)]
@@ -604,6 +627,7 @@ fn setup_keymap(io: &mut Io) {
 mod feature_macroquad {
   use super::*;
   use macroquad::input::utils::repeat_all_miniquad_input;
+  use macroquad::window::get_internal_gl;
 
   impl ImGuiContext<'_> {
     pub fn update_events(&mut self) {
@@ -613,7 +637,7 @@ mod feature_macroquad {
 
   impl Default for ImGuiContext<'_> {
     fn default() -> Self {
-      let gl = unsafe { macroquad::window::get_internal_gl() };
+      let gl = unsafe { get_internal_gl() };
 
       Self::new(gl.quad_context)
     }

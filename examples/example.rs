@@ -2,11 +2,11 @@
 
 use std::time::{Duration, Instant};
 
-use imgui::Condition;
+use imgui::{Condition, FontConfig, FontGlyphRanges};
 use itertools::Itertools;
 use macroquad::prelude::*;
 
-use imgui_macroquad::ImGuiContext;
+use imgui_macroquad::{FontFamily, ImGuiContext};
 
 fn conf() -> Conf {
   Conf {
@@ -24,14 +24,26 @@ async fn main() {
   _main().await.unwrap();
 }
 
-const NOTOSANS_FONT: &[u8] = include_bytes!("fonts/NotoSans-Regular.ttf");
+const NOTO_SANS_FONT: &[u8] = include_bytes!("fonts/NotoSans-Regular.ttf");
+const NOTOSANS_JP_FONT: &[u8] = include_bytes!("fonts/NotoSansJP-Regular.otf");
 
 async fn _main() -> anyhow::Result<!> {
   let mut ctx = ImGuiContext::default();
 
-  let notosans = ctx.add_font_from_bytes("NotoSans-Regular", NOTOSANS_FONT);
+  let mut noto_sans_family = FontFamily::new("NotoSans-Regular", 16.);
 
-  ctx.set_default_font(notosans);
+  noto_sans_family.add_font_from_bytes(NOTO_SANS_FONT);
+  noto_sans_family.add_font_from_bytes_ex(
+    NOTOSANS_JP_FONT,
+    FontConfig {
+      glyph_ranges: FontGlyphRanges::japanese(),
+      ..Default::default()
+    },
+  );
+
+  let noto_sans = ctx.add_font_family(noto_sans_family);
+
+  ctx.set_default_font(noto_sans);
 
   ctx.setup(|ctx| {
     ctx.set_ini_filename(None);
@@ -77,6 +89,7 @@ async fn _main() -> anyhow::Result<!> {
       ui.window("Window")
         .size([900., 900.], Condition::FirstUseEver)
         .build(|| {
+          ui.text("良い");
           ui.input_text("Input", &mut buf).build();
 
           if ui.image_button("image", id, [512., 512.]) {
