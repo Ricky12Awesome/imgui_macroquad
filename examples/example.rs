@@ -1,12 +1,12 @@
 #![feature(never_type)]
 
-use std::ptr::slice_from_raw_parts;
 use std::time::{Duration, Instant};
 
 use imgui::Condition;
+use itertools::Itertools;
 use macroquad::prelude::*;
 
-use imgui_macroquad::get_imgui_context;
+use imgui_macroquad::ImGuiContext;
 
 fn conf() -> Conf {
   Conf {
@@ -27,7 +27,7 @@ async fn main() {
 const NOTOSANS_FONT: &[u8] = include_bytes!("fonts/NotoSans-Regular.ttf");
 
 async fn _main() -> anyhow::Result<!> {
-  let ctx = get_imgui_context();
+  let mut ctx = ImGuiContext::default();
 
   let notosans = ctx.add_font_from_bytes("NotoSans-Regular", NOTOSANS_FONT);
 
@@ -43,40 +43,12 @@ async fn _main() -> anyhow::Result<!> {
   let mut zoom_wait = Instant::now() - wait;
   let mut font_size = 24f32;
 
-  let w = 2048usize;
-  let h = 2048usize;
-  let mut pixels = vec![0u32; w * h];
-
-  for y in 0..h {
-    for x in 0..w {
-      let yp = y as f32 / h as f32;
-      let xp = x as f32 / h as f32;
-
-      let mut r = 0.;
-      let mut g = 0.;
-      let mut b = 0.;
-
-      unsafe {
-        imgui::sys::igColorConvertHSVtoRGB(0.1, yp, 1. - xp, &mut r, &mut g, &mut b);
-      }
-
-      let rgba = [(255. * r) as u8, (255. * g) as u8, (255. * b) as u8, 255u8];
-
-      pixels[y + w * x] = u32::from_le_bytes(rgba);
-    }
-  }
-
-  let pixels = slice_from_raw_parts(pixels.as_ptr() as *const u8, pixels.len() * 4);
-  let pixels = unsafe { &*pixels };
-
-  let image = Texture2D::from_rgba8(w as _, h as _, pixels);
-  let id = ctx.bind_texture_id(image.raw_miniquad_id());
+  let texture = Texture2D::from_image(&gen_image(0.8));
+  let id = ctx.bind_texture_id(texture.raw_miniquad_id());
 
   loop {
     let now = Instant::now();
     clear_background(Color::new(0.16, 0.16, 0.16, 1.));
-
-    ctx.setup_event_handler();
 
     if is_key_down(KeyCode::LeftControl) {
       let (wait, multi) = if is_key_down(KeyCode::LeftShift) {
@@ -106,12 +78,46 @@ async fn _main() -> anyhow::Result<!> {
         .size([900., 900.], Condition::FirstUseEver)
         .build(|| {
           ui.input_text("Input", &mut buf).build();
-          ui.image_button("image", id, [512., 512.]);
+
+          if ui.image_button("image", id, [512., 512.]) {
+            texture.update(&gen_image(rand::gen_range(0.0, 1.0)))
+          }
         });
     });
 
     ctx.draw();
 
     next_frame().await;
+  }
+}
+
+fn gen_image(hue: f32) -> Image {
+  let w = 2048usize;
+  let h = 2048usize;
+  let mut buf = vec![0u32; w * h];
+
+  for y in 0..h {
+    for x in 0..w {
+      let yp = y as f32 / h as f32;
+      let xp = x as f32 / h as f32;
+
+      let mut r = 0.;
+      let mut g = 0.;
+      let mut b = 0.;
+
+      unsafe {
+        imgui::sys::igColorConvertHSVtoRGB(hue, yp, 1. - xp, &mut r, &mut g, &mut b);
+      }
+
+      let rgba = [(255. * r) as u8, (255. * g) as u8, (255. * b) as u8, 255u8];
+
+      buf[y + w * x] = u32::from_le_bytes(rgba);
+    }
+  }
+
+  Image {
+    bytes: buf.into_iter().flat_map(u32::to_le_bytes).collect_vec(),
+    width: w as _,
+    height: h as _,
   }
 }

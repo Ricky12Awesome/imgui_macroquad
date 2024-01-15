@@ -13,6 +13,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 #[cfg(feature = "macroquad")]
+#[allow(unused)]
 pub use feature_macroquad::*;
 
 /// reexport of imgui
@@ -106,6 +107,8 @@ pub struct ImGuiContext<'a> {
   last_frame: f64,
   #[cfg(feature = "macroquad")]
   macroquad_event_id: usize,
+  #[cfg(feature = "macroquad")]
+  auto_trigger_event_handler: bool,
 }
 
 impl<'a> ImGuiContext<'a> {
@@ -131,20 +134,36 @@ impl<'a> ImGuiContext<'a> {
       last_frame: miniquad::date::now(),
       #[cfg(feature = "macroquad")]
       macroquad_event_id: macroquad::input::utils::register_input_subscriber(),
+      #[cfg(feature = "macroquad")]
+      auto_trigger_event_handler: true,
     }
   }
 
-  /// TTF Font
-  pub fn add_font_from_bytes(&mut self, name: &str, bytes: &'a [u8]) -> FontIdHandle {
-    let fonts = self.context.fonts();
-
-    let source = FontSource::TtfData {
-      data: bytes,
-      size_pixels: 16.,
-      config: Some(FontConfig {
+  /// Adds a TTF font to the font list with the given name and a default size of 16px
+  pub fn add_font_from_bytes(&mut self, name: &str, data: &'a [u8]) -> FontIdHandle {
+    self.add_font_from_bytes_ex(
+      16.,
+      data,
+      Some(FontConfig {
         name: Some(name.into()),
         ..Default::default()
       }),
+    )
+  }
+
+  /// Adds a TTF font to the font list with custom size and config
+  pub fn add_font_from_bytes_ex(
+    &mut self,
+    size_pixels: f32,
+    data: &'a [u8],
+    config: Option<FontConfig>,
+  ) -> FontIdHandle {
+    let fonts = self.context.fonts();
+
+    let source = FontSource::TtfData {
+      data,
+      size_pixels,
+      config,
     };
 
     let id = fonts.add_font(&[source.clone()]);
@@ -170,12 +189,6 @@ impl<'a> ImGuiContext<'a> {
 
     for (handle, source) in &self.fonts {
       let source = match source {
-        FontSource::DefaultFontData { config } => FontSource::DefaultFontData {
-          config: config.as_ref().map(|config| FontConfig {
-            size_pixels: size,
-            ..config.clone()
-          }),
-        },
         FontSource::TtfData {
           data,
           size_pixels: _,
@@ -188,6 +201,7 @@ impl<'a> ImGuiContext<'a> {
             ..config.clone()
           }),
         },
+        _ => unreachable!(),
       };
 
       let id = fonts.add_font(&[source]);
@@ -230,20 +244,22 @@ impl<'a> ImGuiContext<'a> {
     style(self.context.style_mut());
   }
 
-  pub fn ui(&mut self, frame: impl FnOnce(&mut Ui)) {
+  pub fn ui(&mut self, frame: impl FnOnce(&Ui)) {
     self.update();
 
     let ui = self.context.new_frame();
 
-    // false positive: cannot borrow `*ui` as mutable because it is also borrowed as immutable
-    // its fine in this case
-    let ui2 = unsafe { ignore_lifetime_mut(ui) };
-    let _stack = self.default_font.as_ref().map(|id| ui2.push_font(id.get()));
+    let _stack = self.default_font.as_ref().map(|id| ui.push_font(id.get()));
 
     frame(ui);
   }
 
   fn update(&mut self) {
+    #[cfg(feature = "macroquad")]
+    if self.auto_trigger_event_handler {
+      self.update_events();
+    }
+
     let io = self.context.io_mut();
     let now = miniquad::date::now();
 
@@ -458,11 +474,6 @@ fn to_imgui_id(texture_id: TextureId) -> (imgui::TextureId, TextureId) {
   }
 }
 
-/// Here because borrow checker gets in the way of imgui in certain cases
-unsafe fn ignore_lifetime_mut<'a, T>(t: &mut T) -> &'a mut T {
-  &mut *(t as *mut T)
-}
-
 struct Clipboard;
 
 impl imgui::ClipboardBackend for Clipboard {
@@ -595,31 +606,22 @@ mod feature_macroquad {
   use macroquad::input::utils::repeat_all_miniquad_input;
 
   impl ImGuiContext<'_> {
-    pub fn setup_event_handler(&mut self) {
+    pub fn update_events(&mut self) {
       repeat_all_miniquad_input(self, self.macroquad_event_id);
     }
   }
 
-  /// Because I can't store ImGuiContext in a static global var,
-  /// and I don't want to impl Send/Sync for it
-  struct ImGuiContextSendSyncSpoof<'a>(ImGuiContext<'a>);
+  impl Default for ImGuiContext<'_> {
+    fn default() -> Self {
+      let gl = unsafe { macroquad::window::get_internal_gl() };
 
-  unsafe impl<'a> Send for ImGuiContextSendSyncSpoof<'a> {}
-  unsafe impl<'a> Sync for ImGuiContextSendSyncSpoof<'a> {}
-
-  static mut CONTEXT: Option<ImGuiContextSendSyncSpoof> = None;
-
-  pub fn get_imgui_context<'a>() -> &'static mut ImGuiContext<'a> {
-    unsafe {
-      // here since this also check if it's in the same thread
-      let gl = macroquad::window::get_internal_gl();
-
-      let context = CONTEXT.get_or_insert_with(|| {
-        let ctx = ImGuiContext::new(gl.quad_context);
-        ImGuiContextSendSyncSpoof(ctx)
-      });
-
-      &mut context.0
+      Self::new(gl.quad_context)
     }
   }
+}
+
+/// Here because borrow checker gets in the way of imgui in certain cases
+#[allow(unused)]
+unsafe fn ignore_lifetime_mut<'a, T>(t: &mut T) -> &'a mut T {
+  &mut *(t as *mut T)
 }
