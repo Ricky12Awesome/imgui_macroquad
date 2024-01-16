@@ -84,13 +84,18 @@ async fn _main() -> anyhow::Result<!> {
       }
     }
 
-    ctx.ui(|ui| {
+    ctx.ui(|ctx, ui| {
       ui.show_demo_window(&mut true);
       ui.window("Window")
         .size([900., 900.], Condition::FirstUseEver)
         .build(|| {
           ui.text("良い");
           ui.input_text("Input", &mut buf).build();
+
+          for (handle, family) in ctx.get_fonts() {
+            let text = format!("[{:?}]: {}, {}", handle.id(), family.name(), family.size());
+            ui.text(text);
+          }
 
           if ui.image_button("image", id, [512., 512.]) {
             texture.update(&gen_image(rand::gen_range(0.0, 1.0)))

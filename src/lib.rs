@@ -1,7 +1,9 @@
 // mod render;
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use ::imgui::{FontConfig, FontId, FontSource};
-use imgui::{DrawCmd, Io, Key, Ui};
 use miniquad::window::screen_size;
 use miniquad::{
   Bindings, BlendFactor, BlendState, BlendValue, BufferLayout, BufferSource, BufferType,
@@ -9,12 +11,11 @@ use miniquad::{
   PipelineParams, RawId, RenderingBackend, ShaderMeta, ShaderSource, TextureId, UniformBlockLayout,
   UniformDesc, UniformType, UniformsSource, VertexAttribute, VertexFormat,
 };
-use std::cell::RefCell;
-use std::rc::Rc;
 
 #[cfg(feature = "macroquad")]
 #[allow(unused)]
 pub use feature_macroquad::*;
+use imgui::{DrawCmd, Io, Key, Ui};
 
 /// reexport of imgui
 pub mod imgui {
@@ -100,21 +101,30 @@ mod shader {
 pub struct ImGuiContext<'a> {
   gl: &'a mut dyn RenderingBackend,
   font_texture: TextureId,
-  default_font: Option<FontIdHandle>,
+  default_font: FontIdHandle,
   fonts: Vec<(FontIdHandle, FontFamily<'a>)>,
   textures: Vec<(imgui::TextureId, TextureId)>,
   context: imgui::Context,
   last_frame: f64,
   #[cfg(feature = "macroquad")]
-  macroquad_event_id: usize,
+  mq_event_id: usize,
   #[cfg(feature = "macroquad")]
-  auto_trigger_event_handler: bool,
+  mq_auto_trigger_event_handler: bool,
 }
 
 impl<'a> ImGuiContext<'a> {
   pub fn new(gl: &'a mut dyn RenderingBackend) -> Self {
     let mut context = imgui::Context::create();
     let fonts = context.fonts();
+
+    fonts.clear();
+
+    let family = FontFamily::default();
+    let id = fonts.add_font(family.sources());
+    let handle = FontIdHandle::new(id);
+
+    let fonts_list = vec![(handle.clone(), family)];
+
     let font_atlas = fonts.build_rgba32_texture();
     let font_texture = gl.new_texture_from_rgba8(
       font_atlas.width as u16,
@@ -122,21 +132,26 @@ impl<'a> ImGuiContext<'a> {
       font_atlas.data,
     );
 
-    setup(&mut context);
+    context.set_clipboard_backend(Clipboard);
+    set_keymap(context.io_mut());
 
     Self {
       gl,
       context,
       font_texture,
-      default_font: None,
-      fonts: vec![],
+      default_font: handle,
+      fonts: fonts_list,
       textures: vec![],
       last_frame: miniquad::date::now(),
       #[cfg(feature = "macroquad")]
-      macroquad_event_id: macroquad::input::utils::register_input_subscriber(),
+      mq_event_id: macroquad::input::utils::register_input_subscriber(),
       #[cfg(feature = "macroquad")]
-      auto_trigger_event_handler: true,
+      mq_auto_trigger_event_handler: true,
     }
+  }
+
+  pub fn get_fonts(&self) -> impl Iterator<Item = &(FontIdHandle, FontFamily<'a>)> {
+    self.fonts.iter()
   }
 
   pub fn add_font_family(&mut self, family: FontFamily<'a>) -> FontIdHandle {
@@ -182,7 +197,7 @@ impl<'a> ImGuiContext<'a> {
   }
 
   pub fn set_default_font(&mut self, id: FontIdHandle) {
-    self.default_font = Some(id);
+    self.default_font = id;
   }
 
   pub fn bind_texture_id(&mut self, id: TextureId) -> imgui::TextureId {
@@ -195,7 +210,7 @@ impl<'a> ImGuiContext<'a> {
 
   #[cfg(feature = "macroquad")]
   pub fn toggle_auto_trigger_event_handler(&mut self) {
-    self.auto_trigger_event_handler = !self.auto_trigger_event_handler;
+    self.mq_auto_trigger_event_handler = !self.mq_auto_trigger_event_handler;
   }
 
   pub fn raw_imgui(&mut self) -> &mut imgui::Context {
@@ -210,19 +225,24 @@ impl<'a> ImGuiContext<'a> {
     style(self.context.style_mut());
   }
 
-  pub fn ui(&mut self, frame: impl FnOnce(&Ui)) {
+  pub fn ui(&mut self, frame: impl FnOnce(&mut Self, &Ui)) {
     self.update();
 
+    // fine since it's single threaded only,
+    // and I don't really want to do with RefCell/Mutex for performance reasons
+    let self_ = unsafe { ignore_lifetime_mut(self) };
+
     let ui = self.context.new_frame();
+    let stack = ui.push_font(self.default_font.get());
 
-    let _stack = self.default_font.as_ref().map(|id| ui.push_font(id.get()));
+    frame(self_, ui);
 
-    frame(ui);
+    stack.end();
   }
 
   fn update(&mut self) {
     #[cfg(feature = "macroquad")]
-    if self.auto_trigger_event_handler {
+    if self.mq_auto_trigger_event_handler {
       self.update_events();
     }
 
@@ -389,12 +409,13 @@ impl<'a> EventHandler for ImGuiContext<'a> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FontIdHandle(Rc<RefCell<FontId>>);
 
-unsafe impl Send for FontIdHandle {}
-unsafe impl Sync for FontIdHandle {}
-
 impl FontIdHandle {
   fn new(id: FontId) -> Self {
     Self(Rc::new(RefCell::new(id)))
+  }
+
+  pub fn id(&self) -> *const () {
+    &self.get() as *const _ as _
   }
 
   pub fn get(&self) -> FontId {
@@ -426,13 +447,36 @@ pub struct FontFamily<'a> {
   sources: Vec<FontSource<'a>>,
 }
 
+impl Default for FontFamily<'static> {
+  fn default() -> Self {
+    Self {
+      name: "ProggyClean.ttf".into(),
+      size_pixels: 13.0,
+      sources: vec![FontSource::DefaultFontData {
+        config: Some(FontConfig {
+          size_pixels: 13.0,
+          ..Default::default()
+        }),
+      }],
+    }
+  }
+}
+
 impl<'a> FontFamily<'a> {
   pub fn new(name: impl ToString, size: f32) -> Self {
     Self {
       name: name.to_string(),
       size_pixels: size,
-      sources: vec![]
+      sources: vec![],
     }
+  }
+
+  pub fn name(&'a self) -> &'a str {
+    self.name.as_str()
+  }
+
+  pub fn size(&self) -> f32 {
+    self.size_pixels
   }
 
   pub fn sources(&'a self) -> &'a [FontSource<'a>] {
@@ -462,6 +506,11 @@ impl<'a> FontFamily<'a> {
 
     for source in self.sources.iter_mut() {
       match source {
+        FontSource::DefaultFontData {
+          config: Some(config),
+        } => {
+          config.size_pixels = new_size;
+        }
         FontSource::TtfData {
           data: _,
           size_pixels,
@@ -509,12 +558,7 @@ impl imgui::ClipboardBackend for Clipboard {
   }
 }
 
-fn setup(ctx: &mut imgui::Context) {
-  ctx.set_clipboard_backend(Clipboard);
-  setup_keymap(ctx.io_mut());
-}
-
-fn setup_keymap(io: &mut Io) {
+fn set_keymap(io: &mut Io) {
   io[Key::Space] = KeyCode::Space as _;
   io[Key::Apostrophe] = KeyCode::Apostrophe as _;
   io[Key::Comma] = KeyCode::Comma as _;
@@ -625,13 +669,14 @@ fn setup_keymap(io: &mut Io) {
 
 #[cfg(feature = "macroquad")]
 mod feature_macroquad {
-  use super::*;
   use macroquad::input::utils::repeat_all_miniquad_input;
   use macroquad::window::get_internal_gl;
 
+  use super::*;
+
   impl ImGuiContext<'_> {
     pub fn update_events(&mut self) {
-      repeat_all_miniquad_input(self, self.macroquad_event_id);
+      repeat_all_miniquad_input(self, self.mq_event_id);
     }
   }
 
@@ -645,7 +690,6 @@ mod feature_macroquad {
 }
 
 /// Here because borrow checker gets in the way of imgui in certain cases
-#[allow(unused)]
 unsafe fn ignore_lifetime_mut<'a, T>(t: &mut T) -> &'a mut T {
   &mut *(t as *mut T)
 }
